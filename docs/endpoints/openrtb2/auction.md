@@ -416,7 +416,8 @@ When a storedauctionresponse ID is specified:
 
 - the rest of the ext.prebid block is irrelevant and ignored
 - nothing is sent to any bidder adapter for that imp
-- the response retrieved from the stored-response-id is assumed to be the entire contents of the seatbid object corresponding to that impression.
+- the response retrieved for the specified ID is an array of objects that will be used to create the seatbid response. There can be multiple bidders in a single storedauctionresponse and if there are multiple imps from the same bidder, seatbid objects are properly merged.
+- the impid of the original request is copied through to the response
 
 This request:
 ```
@@ -451,11 +452,11 @@ Will result in this response, assuming that the ids exist in the appropriate DB 
     "seatbid": [
         {
              // BidderA bids from storedauctionresponse=1111111111
-             // BidderA bids from storedauctionresponse=22222222
+             // BidderA bids from storedauctionresponse=2222222222
         },
        {
              // BidderB bids from storedauctionresponse=1111111111
-             // BidderB bids from storedauctionresponse=22222222
+             // BidderB bids from storedauctionresponse=2222222222
        }
   ]
 }
@@ -526,6 +527,38 @@ Could result in this response:
 Setting up the storedresponse DB entries is the responsibility of each Prebid Server host company.
 
 See Prebid.org troubleshooting pages for how to utilize this feature within the context of the browser.
+
+**Stored Response Database Entry**
+
+The database query defined in Prebid Server's config will determine which field the stored response blocks should be stored in. e.g.
+
+```
+stored-responses-query: SELECT resid, responseData FROM stored_responses WHERE resid IN (%RESPONSE_ID_LIST%)
+```
+
+Here's an example block of responseData defining 2 bids for the impression:
+```
+[{"bid": [{"h": 250, "w": 300, "id": "f227a07f-1579-4465-bc5e-5c5b02a0c180", "adm": "<h2>test1</h2>", "ext": {"prebid": {"type": "banner"}}, "crid": "11111", "price": 1.23}], "seat": "bidderA", "group": 0}, {"bid": [{"h": 250, "w": 300, "id": "a121a07f-1579-4465-bc5e-5c5b02a0c421", "adm": "<h2>test2</h2>", "ext": {"prebid": {"type": "banner"}}, "crid": "22222", "price": 1.24}], "seat": "bidderB", "group": 0}]
+```
+
+Note the structure of the DB entry is similar to OpenRTB seatbid, but not the same:
+
+```
+[                          // array of special objects
+    {
+        "bid": [           // each object contains a bid that gets placed into the seatbid[seat].bid[] array
+            { ... }
+        ],
+        "seat": "bidderA"  // defines which seatbid object this bid gets sorted into
+    },
+    {
+        "bid": [           // next bid
+            { ... }
+        ],
+        "seat": "bidderB"   // can belong to different bidder
+    }
+]
+```
 
 
 #### User IDs (PBS-Java only)
