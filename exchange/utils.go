@@ -204,7 +204,6 @@ func splitBidRequest(req *openrtb.BidRequest,
 			RType:       labels.RType,
 			Adapter:     coreBidder,
 			PubID:       labels.PubID,
-			Browser:     labels.Browser,
 			CookieFlag:  labels.CookieFlag,
 			AdapterBids: pbsmetrics.AdapterBidPresent,
 		}
