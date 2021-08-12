@@ -9,12 +9,6 @@ type ExtImpPrebid struct {
 	// StoredRequest specifies which stored impression to use, if any.
 	StoredRequest *ExtStoredRequest `json:"storedrequest"`
 
-	// ExtStoredAuctionResponse specifies which stored auction response to use, if any.
-	ExtStoredAuctionResponse *ExtStoredAuctionResponse `json:"storedauctionresponse,omitempty"`
-
-	// ExtStoredBidResponse specifies which stored bid responseto use, if any.
-	ExtStoredBidResponse []*ExtStoredBidResponse `json:"storedbidresponse,omitempty"`
-
 	// IsRewardedInventory is a signal intended for video impressions. Must be 0 or 1.
 	IsRewardedInventory int8 `json:"is_rewarded_inventory"`
 
@@ -28,18 +22,6 @@ type ExtImpPrebid struct {
 type ExtStoredRequest struct {
 	ID string `json:"id"`
 }
-
-// ExtStoredAuctionResponse defines the contract for bidrequest.imp[i].ext.prebid.storedauctionresponse
-type ExtStoredAuctionResponse struct {
-	ID string `json:"id"`
-}
-
-// ExtStoredBidResponse defines the contract for bidrequest.imp[i].ext.prebid.storedbidresponse
-type ExtStoredBidResponse struct {
-	Bidder string `json:"bidder"`
-	ID     string `json:"id"`
-}
-
 type Options struct {
 	Echovideoattrs bool `json:"echovideoattrs"`
 }

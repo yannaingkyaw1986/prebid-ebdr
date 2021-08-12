@@ -267,8 +267,6 @@ func (deps *endpointDeps) parseRequest(httpRequest *http.Request) (req *openrtb_
 		return
 	}
 
-	//!!!process storedauctionresponse
-
 	if err := json.Unmarshal(requestJson, req.BidRequest); err != nil {
 		errs = []error{err}
 		return
@@ -1325,7 +1323,7 @@ func (deps *endpointDeps) processStoredRequests(ctx context.Context, requestJson
 	if err != nil {
 		return nil, nil, []error{err}
 	}
-	impInfo, errs := parseImpInfo2(requestJson)
+	impInfo, errs := parseImpInfo(requestJson)
 	//imps, impIds, idIndices, errs := parseImpInfo(requestJson)
 	if len(errs) > 0 {
 		fmt.Print(impInfo)
@@ -1446,30 +1444,8 @@ func (deps *endpointDeps) processStoredRequests(ctx context.Context, requestJson
 	return resolvedRequest, impExtInfoMap, nil
 }
 
-// parseImpInfo parses the request JSON and returns several things about the Imps
-//
-// 1. A list of the JSON for every Imp.
-// 2. A list of all IDs which appear at `imp[i].ext.prebid.storedrequest.id`.
-// 3. A list intended to parallel "ids". Each element tells which index of "imp[index]" the corresponding element of "ids" should modify.
-// 4. Any errors which occur due to bad requests. These should warrant an HTTP 4xx response.
-func parseImpInfo(requestJson []byte) (imps []json.RawMessage, ids []string, impIdIndices []int, errs []error) {
-	if impArray, dataType, _, err := jsonparser.Get(requestJson, "imp"); err == nil && dataType == jsonparser.Array {
-		i := 0
-		jsonparser.ArrayEach(impArray, func(imp []byte, _ jsonparser.ValueType, _ int, err error) {
-			if storedImpId, hasStoredImp, err := getStoredRequestId(imp); err != nil {
-				errs = append(errs, err)
-			} else if hasStoredImp {
-				ids = append(ids, storedImpId)
-				impIdIndices = append(impIdIndices, i)
-			}
-			imps = append(imps, imp)
-			i++
-		})
-	}
-	return
-}
-
-func parseImpInfo2(requestJson []byte) (impData []ImpData, errs []error) {
+// parseImpInfo parses the request JSON and returns impression and unmarshalled imp.ext.prebid
+func parseImpInfo(requestJson []byte) (impData []ImpData, errs []error) {
 
 	//impData := make([]ImpData, 0)
 	if impArray, dataType, _, err := jsonparser.Get(requestJson, "imp"); err == nil && dataType == jsonparser.Array {
