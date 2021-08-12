@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/buger/jsonparser"
-	jsonpatch "github.com/evanphx/json-patch"
+	"github.com/evanphx/json-patch"
 	"github.com/gofrs/uuid"
 	"github.com/golang/glog"
 	"github.com/julienschmidt/httprouter"
@@ -266,6 +266,8 @@ func (deps *endpointDeps) parseRequest(httpRequest *http.Request) (req *openrtb_
 	if requestJson, impExtInfoMap, errs = deps.processStoredRequests(ctx, requestJson); len(errs) > 0 {
 		return
 	}
+
+	//!!!process storedauctionresponse
 
 	if err := json.Unmarshal(requestJson, req.BidRequest); err != nil {
 		errs = []error{err}
@@ -1323,8 +1325,10 @@ func (deps *endpointDeps) processStoredRequests(ctx context.Context, requestJson
 	if err != nil {
 		return nil, nil, []error{err}
 	}
-	imps, impIds, idIndices, errs := parseImpInfo(requestJson)
+	impInfo, errs := parseImpInfo2(requestJson)
+	//imps, impIds, idIndices, errs := parseImpInfo(requestJson)
 	if len(errs) > 0 {
+		fmt.Print(impInfo)
 		return nil, nil, errs
 	}
 
@@ -1333,6 +1337,20 @@ func (deps *endpointDeps) processStoredRequests(ctx context.Context, requestJson
 	if hasStoredBidRequest {
 		storedReqIds = []string{storedBidRequestId}
 	}
+
+	//impIds list of all stored impression ids
+	impIds := make([]string, 0)
+	impIdsUnique := make(map[string]bool)
+	for _, impData := range impInfo {
+		if impData.ImpExtPrebid.StoredRequest != nil && len(impData.ImpExtPrebid.StoredRequest.ID) > 0 {
+			storedImpId := impData.ImpExtPrebid.StoredRequest.ID
+			if !impIdsUnique[storedImpId] {
+				impIds = append(impIds, storedImpId)
+				impIdsUnique[storedImpId] = true
+			}
+		}
+	}
+
 	storedRequests, storedImps, errs := deps.storedReqFetcher.FetchRequests(ctx, storedReqIds, impIds)
 	if len(errs) != 0 {
 		return nil, nil, errs
@@ -1378,42 +1396,44 @@ func (deps *endpointDeps) processStoredRequests(ctx context.Context, requestJson
 	// Apply any Stored Imps, if they exist. Since the JSON Merge Patch overrides arrays,
 	// and Prebid Server defers to the HTTP Request to resolve conflicts, it's safe to
 	// assume that the request.imp data did not change when applying the Stored BidRequest.
-	impExtInfoMap := make(map[string]exchange.ImpExtInfo, len(impIds))
-	for i := 0; i < len(impIds); i++ {
-		resolvedImp, err := jsonpatch.MergePatch(storedImps[impIds[i]], imps[idIndices[i]])
+	impExtInfoMap := make(map[string]exchange.ImpExtInfo, 0)
+	resolvedImps := make([]json.RawMessage, 0)
+	for i, impData := range impInfo {
+		if impData.ImpExtPrebid.StoredRequest != nil && len(impData.ImpExtPrebid.StoredRequest.ID) > 0 {
+			resolvedImp, err := jsonpatch.MergePatch(storedImps[impData.ImpExtPrebid.StoredRequest.ID], impData.Imp)
 
-		if err != nil {
-			hasErr, Err := getJsonSyntaxError(imps[idIndices[i]])
-			if hasErr {
-				err = fmt.Errorf("Invalid JSON in Imp[%d] of Incoming Request: %s", i, Err)
-			} else {
-				hasErr, Err = getJsonSyntaxError(storedImps[impIds[i]])
+			if err != nil {
+				hasErr, Err := getJsonSyntaxError(impData.Imp)
 				if hasErr {
-					err = fmt.Errorf("imp.ext.prebid.storedrequest.id %s: Stored Imp has Invalid JSON: %s", impIds[i], Err)
+					err = fmt.Errorf("Invalid JSON in Imp[%d] of Incoming Request: %s", i, Err)
+				} else {
+					hasErr, Err = getJsonSyntaxError(storedImps[impIds[i]])
+					if hasErr {
+						err = fmt.Errorf("imp.ext.prebid.storedrequest.id %s: Stored Imp has Invalid JSON: %s", impIds[i], Err)
+					}
 				}
+				return nil, nil, []error{err}
 			}
-			return nil, nil, []error{err}
-		}
-		imps[idIndices[i]] = resolvedImp
+			resolvedImps = append(resolvedImps, resolvedImp)
 
-		impId, err := jsonparser.GetString(resolvedImp, "id")
-		if err != nil {
-			return nil, nil, []error{err}
+			impId, err := jsonparser.GetString(resolvedImp, "id")
+			if err != nil {
+				return nil, nil, []error{err}
+			}
+
+			echovideoAttributes := false
+			if impData.ImpExtPrebid.Options != nil {
+				echovideoAttributes = impData.ImpExtPrebid.Options.Echovideoattrs
+			}
+			impExtInfoMap[impId] = exchange.ImpExtInfo{EchoVideoAttrs: echovideoAttributes, StoredImp: storedImps[impData.ImpExtPrebid.StoredRequest.ID]}
+
+		} else {
+			resolvedImps = append(resolvedImps, impData.Imp)
 		}
-		// This is substantially faster for reading values from a json blob than the Go json package,
-		// but keep in mind that each jsonparser.GetXXX call re-parses the entire json.
-		// Based on performance measurements, the tipping point of efficiency is around 4 calls.
-		// At that point, please consider switching to EachKey to use a single pass.
-		includeVideoAttributes, err := jsonparser.GetBoolean(resolvedImp, "ext", "prebid", "options", "echovideoattrs")
-		if err != nil && err != jsonparser.KeyPathNotFoundError {
-			return nil, nil, []error{err}
-		}
-		if storedImps[impIds[i]] != nil {
-			impExtInfoMap[impId] = exchange.ImpExtInfo{EchoVideoAttrs: includeVideoAttributes, StoredImp: storedImps[impIds[i]]}
-		}
+
 	}
-	if len(impIds) > 0 {
-		newImpJson, err := json.Marshal(imps)
+	if len(resolvedImps) > 0 {
+		newImpJson, err := json.Marshal(resolvedImps)
 		if err != nil {
 			return nil, nil, []error{err}
 		}
@@ -1447,6 +1467,30 @@ func parseImpInfo(requestJson []byte) (imps []json.RawMessage, ids []string, imp
 		})
 	}
 	return
+}
+
+func parseImpInfo2(requestJson []byte) (impData []ImpData, errs []error) {
+
+	//impData := make([]ImpData, 0)
+	if impArray, dataType, _, err := jsonparser.Get(requestJson, "imp"); err == nil && dataType == jsonparser.Array {
+		_, err = jsonparser.ArrayEach(impArray, func(imp []byte, _ jsonparser.ValueType, _ int, err error) {
+			impExtData, _, _, err := jsonparser.Get(imp, "ext", "prebid")
+			var impExtPrebid openrtb_ext.ExtImpPrebid
+			if impExtData != nil {
+				if err := json.Unmarshal(impExtData, &impExtPrebid); err != nil {
+					errs = append(errs, err)
+				}
+			}
+			newImpData := ImpData{imp, impExtPrebid}
+			impData = append(impData, newImpData)
+		})
+	}
+	return
+}
+
+type ImpData struct {
+	Imp          json.RawMessage
+	ImpExtPrebid openrtb_ext.ExtImpPrebid
 }
 
 // getStoredRequestId parses a Stored Request ID from some json, without doing a full (slow) unmarshal.

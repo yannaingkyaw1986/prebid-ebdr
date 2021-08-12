@@ -3203,7 +3203,7 @@ var testStoredRequestsErrors = []string{
 }
 
 var testStoredRequestsErrorsResults = []string{
-	"Value is not a boolean: 1",
+	"cannot unmarshal number into Go struct",
 	"Key path not found",
 }
 
