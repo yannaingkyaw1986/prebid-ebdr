@@ -262,8 +262,13 @@ func (deps *endpointDeps) parseRequest(httpRequest *http.Request) (req *openrtb_
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
+	impInfo, errs := parseImpInfo(requestJson)
+	if len(errs) > 0 {
+		return nil, nil, errs
+	}
+
 	// Fetch the Stored Request data and merge it into the HTTP request.
-	if requestJson, impExtInfoMap, errs = deps.processStoredRequests(ctx, requestJson); len(errs) > 0 {
+	if requestJson, impExtInfoMap, errs = deps.processStoredRequests(ctx, requestJson, impInfo); len(errs) > 0 {
 		return
 	}
 
@@ -1317,17 +1322,11 @@ func getJsonSyntaxError(testJSON []byte) (bool, string) {
 	return false, ""
 }
 
-func (deps *endpointDeps) processStoredRequests(ctx context.Context, requestJson []byte) ([]byte, map[string]exchange.ImpExtInfo, []error) {
+func (deps *endpointDeps) processStoredRequests(ctx context.Context, requestJson []byte, impInfo []ImpData) ([]byte, map[string]exchange.ImpExtInfo, []error) {
 	// Parse the Stored Request IDs from the BidRequest and Imps.
 	storedBidRequestId, hasStoredBidRequest, err := getStoredRequestId(requestJson)
 	if err != nil {
 		return nil, nil, []error{err}
-	}
-	impInfo, errs := parseImpInfo(requestJson)
-	//imps, impIds, idIndices, errs := parseImpInfo(requestJson)
-	if len(errs) > 0 {
-		fmt.Print(impInfo)
-		return nil, nil, errs
 	}
 
 	// Fetch the Stored Request data
@@ -1336,20 +1335,20 @@ func (deps *endpointDeps) processStoredRequests(ctx context.Context, requestJson
 		storedReqIds = []string{storedBidRequestId}
 	}
 
-	//impIds list of all stored impression ids
-	impIds := make([]string, 0)
-	impIdsUnique := make(map[string]bool)
+	//impStoredReqIds list of all stored impression ids
+	impStoredReqIds := make([]string, 0)
+	impStoredReqIdsUnique := make(map[string]bool)
 	for _, impData := range impInfo {
 		if impData.ImpExtPrebid.StoredRequest != nil && len(impData.ImpExtPrebid.StoredRequest.ID) > 0 {
 			storedImpId := impData.ImpExtPrebid.StoredRequest.ID
-			if !impIdsUnique[storedImpId] {
-				impIds = append(impIds, storedImpId)
-				impIdsUnique[storedImpId] = true
+			if !impStoredReqIdsUnique[storedImpId] {
+				impStoredReqIds = append(impStoredReqIds, storedImpId)
+				impStoredReqIdsUnique[storedImpId] = true
 			}
 		}
 	}
 
-	storedRequests, storedImps, errs := deps.storedReqFetcher.FetchRequests(ctx, storedReqIds, impIds)
+	storedRequests, storedImps, errs := deps.storedReqFetcher.FetchRequests(ctx, storedReqIds, impStoredReqIds)
 	if len(errs) != 0 {
 		return nil, nil, errs
 	}
@@ -1405,9 +1404,9 @@ func (deps *endpointDeps) processStoredRequests(ctx context.Context, requestJson
 				if hasErr {
 					err = fmt.Errorf("Invalid JSON in Imp[%d] of Incoming Request: %s", i, Err)
 				} else {
-					hasErr, Err = getJsonSyntaxError(storedImps[impIds[i]])
+					hasErr, Err = getJsonSyntaxError(storedImps[impData.ImpExtPrebid.StoredRequest.ID])
 					if hasErr {
-						err = fmt.Errorf("imp.ext.prebid.storedrequest.id %s: Stored Imp has Invalid JSON: %s", impIds[i], Err)
+						err = fmt.Errorf("imp.ext.prebid.storedrequest.id %s: Stored Imp has Invalid JSON: %s", impData.ImpExtPrebid.StoredRequest.ID, Err)
 					}
 				}
 				return nil, nil, []error{err}
