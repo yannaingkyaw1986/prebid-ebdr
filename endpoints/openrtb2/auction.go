@@ -135,7 +135,7 @@ func (deps *endpointDeps) Auction(w http.ResponseWriter, r *http.Request, _ http
 		deps.analytics.LogAuctionObject(&ao)
 	}()
 
-	req, impExtInfoMap, errL := deps.parseRequest(r)
+	req, impExtInfoMap, storedAuctionResponses, impIdToStoredRespId, errL := deps.parseRequest(r)
 
 	if errortypes.ContainsFatalError(errL) && writeError(errL, w, &labels) {
 		return
@@ -183,19 +183,29 @@ func (deps *endpointDeps) Auction(w http.ResponseWriter, r *http.Request, _ http
 
 	secGPC := r.Header.Get("Sec-GPC")
 
-	auctionRequest := exchange.AuctionRequest{
-		BidRequest:                 req.BidRequest,
-		Account:                    *account,
-		UserSyncs:                  usersyncs,
-		RequestType:                labels.RType,
-		StartTime:                  start,
-		LegacyLabels:               labels,
-		Warnings:                   warnings,
-		GlobalPrivacyControlHeader: secGPC,
-		ImpExtInfoMap:              impExtInfoMap,
+	var response *openrtb2.BidResponse
+	var err error
+
+	if len(storedAuctionResponses) == 0 {
+
+		auctionRequest := exchange.AuctionRequest{
+			BidRequest:                 req.BidRequest,
+			Account:                    *account,
+			UserSyncs:                  usersyncs,
+			RequestType:                labels.RType,
+			StartTime:                  start,
+			LegacyLabels:               labels,
+			Warnings:                   warnings,
+			GlobalPrivacyControlHeader: secGPC,
+			ImpExtInfoMap:              impExtInfoMap,
+		}
+
+		response, err = deps.ex.HoldAuction(ctx, auctionRequest, nil)
+
+	} else {
+		response, err = buildStoredAuctionResponse(storedAuctionResponses, impIdToStoredRespId)
 	}
 
-	response, err := deps.ex.HoldAuction(ctx, auctionRequest, nil)
 	ao.Request = req.BidRequest
 	ao.Response = response
 	ao.Account = account
@@ -225,6 +235,43 @@ func (deps *endpointDeps) Auction(w http.ResponseWriter, r *http.Request, _ http
 	}
 }
 
+func buildStoredAuctionResponse(storedAuctionResponses map[string]json.RawMessage, impIdToStoredRespId map[string]string) (*openrtb2.BidResponse, error) {
+	//unmarshall all stored auction responses
+	storedAuctionResponsesBids := make(map[string][]openrtb2.SeatBid)
+	for storedReqId, rawBidResponse := range storedAuctionResponses {
+		var bidResp []openrtb2.SeatBid
+		err := json.Unmarshal(rawBidResponse, &bidResp)
+		if err != nil {
+			return nil, err
+		}
+		storedAuctionResponsesBids[storedReqId] = bidResp
+	}
+
+	seatBids := make(map[string][]openrtb2.Bid, 0)
+
+	for impId, storedRespId := range impIdToStoredRespId {
+		bids := storedAuctionResponsesBids[storedRespId]
+
+		for _, sBids := range bids {
+			for _, bidd := range sBids.Bid {
+				bidd.ImpID = impId
+
+				if seatBids[sBids.Seat] == nil {
+					seatBids[sBids.Seat] = make([]openrtb2.Bid, 0)
+					seatBids[sBids.Seat] = append(seatBids[sBids.Seat], bidd)
+				}
+			}
+		}
+	}
+
+	resBidResponse := openrtb2.BidResponse{}
+	for bidder, sBids := range seatBids {
+		sb := openrtb2.SeatBid{Seat: bidder, Bid: sBids}
+		resBidResponse.SeatBid = append(resBidResponse.SeatBid, sb)
+	}
+	return &resBidResponse, nil
+}
+
 // parseRequest turns the HTTP request into an OpenRTB request. This is guaranteed to return:
 //
 //   - A context which times out appropriately, given the request.
@@ -235,7 +282,7 @@ func (deps *endpointDeps) Auction(w http.ResponseWriter, r *http.Request, _ http
 // possible, it will return errors with messages that suggest improvements.
 //
 // If the errors list has at least one element, then no guarantees are made about the returned request.
-func (deps *endpointDeps) parseRequest(httpRequest *http.Request) (req *openrtb_ext.RequestWrapper, impExtInfoMap map[string]exchange.ImpExtInfo, errs []error) {
+func (deps *endpointDeps) parseRequest(httpRequest *http.Request) (req *openrtb_ext.RequestWrapper, impExtInfoMap map[string]exchange.ImpExtInfo, storedAuctionResponses map[string]json.RawMessage, impIdToStoredRespId map[string]string, errs []error) {
 	req = &openrtb_ext.RequestWrapper{}
 	req.BidRequest = &openrtb2.BidRequest{}
 	errs = nil
@@ -264,12 +311,17 @@ func (deps *endpointDeps) parseRequest(httpRequest *http.Request) (req *openrtb_
 
 	impInfo, errs := parseImpInfo(requestJson)
 	if len(errs) > 0 {
-		return nil, nil, errs
+		return nil, nil, nil, nil, errs
 	}
 
 	// Fetch the Stored Request data and merge it into the HTTP request.
 	if requestJson, impExtInfoMap, errs = deps.processStoredRequests(ctx, requestJson, impInfo); len(errs) > 0 {
 		return
+	}
+
+	storedAuctionResponses, impIdToStoredRespId, errs = deps.processStoredResponses(ctx, impInfo)
+	if len(errs) > 0 {
+		return nil, nil, nil, nil, errs
 	}
 
 	if err := json.Unmarshal(requestJson, req.BidRequest); err != nil {
@@ -287,9 +339,15 @@ func (deps *endpointDeps) parseRequest(httpRequest *http.Request) (req *openrtb_
 
 	lmt.ModifyForIOS(req.BidRequest)
 
-	errL := deps.validateRequest(req)
-	if len(errL) > 0 {
-		errs = append(errs, errL...)
+	if len(storedAuctionResponses) == 0 {
+		errL := deps.validateRequest(req)
+		if len(errL) > 0 {
+			errs = append(errs, errL...)
+		}
+	} else {
+		//all imps should have stored auction response and imp Id
+		//every imp should have unique per req stored response id
+		//!!! Add validation
 	}
 
 	return
@@ -1441,6 +1499,38 @@ func (deps *endpointDeps) processStoredRequests(ctx context.Context, requestJson
 	}
 
 	return resolvedRequest, impExtInfoMap, nil
+}
+
+func (deps *endpointDeps) processStoredResponses(ctx context.Context, impInfo []ImpData) (storedAuctionResponses map[string]json.RawMessage, impIdToStoredRespId map[string]string, errs []error) {
+
+	//!!! Single Stored Auction Responses
+	storedAuctionRespIds := make([]string, 0)
+	storedAuctionRespIdsUnique := make(map[string]bool)
+
+	for _, impData := range impInfo {
+
+		impId, err := jsonparser.GetString(impData.Imp, "id")
+		if err != nil {
+			errs = append(errs, err)
+			return
+		}
+
+		impIdToStoredRespId = make(map[string]string)
+		//get unique stored action responses
+		if impData.ImpExtPrebid.ExtStoredAuctionResponse != nil && len(impData.ImpExtPrebid.ExtStoredAuctionResponse.ID) > 0 {
+			storedAuctionRespId := impData.ImpExtPrebid.ExtStoredAuctionResponse.ID
+			impIdToStoredRespId[impId] = storedAuctionRespId
+
+			if !storedAuctionRespIdsUnique[storedAuctionRespId] {
+				storedAuctionRespIds = append(storedAuctionRespIds, storedAuctionRespId)
+				storedAuctionRespIdsUnique[storedAuctionRespId] = true
+			}
+		}
+	}
+
+	_, storedAuctionResponses, errs = deps.storedReqFetcher.FetchRequests(ctx, make([]string, 0), storedAuctionRespIds)
+
+	return
 }
 
 // parseImpInfo parses the request JSON and returns impression and unmarshalled imp.ext.prebid
